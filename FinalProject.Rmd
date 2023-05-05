@@ -1,0 +1,130 @@
+---
+title: "Political Party Predictions Using R"
+author: "Nicholas Sutton and Aaron Oakes"
+date: '2023-04-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidycensus)
+library(tidyverse)
+library(caret)
+```
+
+```{r} 
+census_data <- read.csv("Jan20 Census_cleaned dataset.csv") #makes a data frame of our data
+```
+
+We want to filter our data more so that it just has the columns that we are interested in studying. We also filter out rows where the respondent declined to enter their party identification, and finally we made our own column that converts their party to a 1 or 0 to make it easier to work with.
+```{r}
+chosen_data <- census_data[,c("Leaned.party.identification", "Age", "Education..Categorical.", "Race...Ethnicity", "Gender", "Household.Income", "MSA.Status", "Region.4...Based.on.State.of.Residence")]
+filtered_data <- chosen_data %>% filter(Leaned.party.identification != "Refused-no lean")
+filtered_data$FactorParty <- with(filtered_data, ifelse(Leaned.party.identification == "Dem/Lean Dem",1 , 0))
+```
+
+We wanted to start by making models that just used one variable as a predictor to see how each of them fare. We used Age, Education Category, Race/Ethnicity, Gender, Househould Income, Metro Status (Do they live in a metro area or not?), and Region they reside in.
+```{r}
+filtered_data
+Age.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ Age)
+
+Education.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ Education..Categorical.)
+
+Race.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ Race...Ethnicity)
+
+Gender.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ Gender)
+
+Income.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ Household.Income)
+
+MetroStatus.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ MSA.Status)
+
+Region.Model <- glm(data = filtered_data, family = "binomial", formula = FactorParty ~ Region.4...Based.on.State.of.Residence)
+```
+We did a summary of each model to see how well they do.
+```{r}
+summary(Age.Model)
+summary(Education.Model)
+summary(Race.Model)
+summary(Gender.Model)
+summary(Income.Model)
+summary(MetroStatus.Model)
+summary(Region.Model)
+```
+All of these models seem rather significant for predictions except for the Income model. Possibly because instead of being linear they are categorized into income brackets.
+
+We then made a joint model of all of the variables that worked well to see if the AIC improved with all of these predictors together.
+```{r}
+joint.model <-  glm(FactorParty ~ Age + Education..Categorical. + Race...Ethnicity + Gender + MSA.Status + Region.4...Based.on.State.of.Residence, family = "binomial", data = filtered_data)
+
+summary(joint.model)
+```
+Fascinatingly enough, the joint model had a lower AIC then all of the other individual models, possibly suggesting that some variables cover some issues that other variables were struggling with.
+
+To further clarify our findings, we made predictions with our model and ran them in a confusion matrix, which had an accuracy of 67%.
+```{r}
+filtered_data$predictions <- predict.glm(joint.model, filtered_data, type = "response")
+filtered_data$PredictionFactor <- with(filtered_data, ifelse(predictions > 0.5 ,1 , 0))
+removedrow <- na.omit(filtered_data)
+confusionMatrix(as.factor(removedrow$PredictionFactor), as.factor(removedrow$FactorParty))
+```
+However, there is a chance that the data we trained with leaked into the predictions creating some false accuracy. To avoid doing that we are going to split the data set with a 70/30 ratio into training and testing data frames.
+
+```{r}
+removedrow$id <- 1:nrow(removedrow)
+train <- removedrow %>% dplyr::sample_frac(0.70)
+test  <- dplyr::anti_join(removedrow, train, by = 'id')
+```
+Now we're going to train with the same variables on the training data, run predictions on the testing data with the model, and run it through a confusion matrix to see how well it works.
+
+```{r}
+train.model <-  glm(FactorParty ~ Age + Education..Categorical. + Race...Ethnicity + Gender + MSA.Status + Region.4...Based.on.State.of.Residence, family = "binomial", data = train)
+predictions <- as.data.frame(predict.glm(train.model, test, type = "response"))
+predictionFactor <- with(predictions, ifelse(predictions > 0.5 ,1 , 0))
+confusionMatrix <- confusionMatrix(as.factor(predictionFactor), as.factor(test$FactorParty))
+confusionMatrix
+```
+The confusion matrix suggests that we were able to accurately predict political party affiliation 65.6% of the time.
+
+We now want to visualize it for our poster. We're making a data frame with the predictions and results then using that dataframe to make a bar graph.
+```{r}
+Result <- c(confusionMatrix$table[1],confusionMatrix$table[2],confusionMatrix$table[3],confusionMatrix$table[4])
+Prediction <-  c("Republican (Correct)", "Democrat (Wrong)", "Republican (Wrong)", "Democrat (Correct)")
+resultsDF <- data.frame(Result, Prediction)
+
+ggplot(resultsDF, mapping = aes(x = Prediction, y = Result, fill = Prediction)) + geom_bar(stat = "identity") + ggtitle("Predictions of the Joint Model Against the Test Data") + xlab("Guess (Result)") + ylab("Number of Guesses")
+```
+
+Finally, we want to try and visualize how different variables can influence the predictions, so we made a plot with age on the x axis and party on the y axis, and we made functions showing how Race, Gender, and Metro Status influence the predictions.
+
+When we plot all of these functions on the same graph, we can see how certain factors influence the prediction significantly at times.
+```{r}
+beta <- coef(joint.model)
+
+log.WhiteGuyMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[9]] + beta[[10]])}
+
+log.WhiteGuyNonMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[9]] + beta[[10]] + beta[[11]])}
+
+log.WhiteGalMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[9]])}
+
+log.WhiteGalNonMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[9]] + beta[[11]])}
+
+log.BlackGuyMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[6]] + beta[[10]])}
+
+log.BlackGuyNonMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[6]] + beta[[10]] + beta[[11]])}
+
+log.BlackGalMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[6]])}
+
+log.BlackGalNonMetro <- function(x){plogis(beta[[1]]+beta[[2]]*x+beta[[3]] + beta[[6]] + beta[[11]])}
+
+ggplot(filtered_data, aes(x = Age)) +
+  geom_jitter(aes(y=FactorParty), width = 0, height = 0.05) +
+  geom_function(fun = log.WhiteGuyMetro, mapping = aes(color = "White Guy Metro"), size = 1) + 
+  geom_function(fun = log.WhiteGuyNonMetro, mapping = aes(color = "White Guy Non-Metro"), size = 1) + 
+  geom_function(fun = log.WhiteGalMetro, mapping = aes(color = "White Gal Metro"), size = 1) + 
+  geom_function(fun = log.WhiteGalNonMetro, mapping = aes(color = "White Gal Non-Metro"), size = 1) + 
+  geom_function(fun = log.BlackGuyMetro, mapping = aes(color = "Black Guy Metro"), size = 1) +
+  geom_function(fun = log.BlackGuyNonMetro, mapping = aes(color = "Black Guy Non-Metro"), size = 1) +
+  geom_function(fun = log.BlackGalMetro, mapping = aes(color = "Black Gal Metro"), size = 1) +
+  geom_function(fun = log.BlackGalNonMetro, mapping = aes(color = "Black Gal Non-Metro"), size = 1) + 
+  labs(title = "Plotting Functions of Varying Race, Gender, and Metro-Status", subtitle = "High School Grad in the Midwest") +
+  ylab("Party (1 for Democrat, 0 for Republican)")
+```
